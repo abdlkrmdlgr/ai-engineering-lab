@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react';
 import {
   Activity, ArrowDown, ArrowLeftRight, ArrowRight, BarChart3, BookOpen, Braces, Check,
   CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Code2, Command,
-  FlaskConical, Gauge, KeyRound, Layers3, Lightbulb, LockKeyhole, Menu, Play,
-  RotateCcw, Settings2, ShieldCheck, Sparkles, Terminal, WandSparkles, X,
+  FlaskConical, Gauge, KeyRound, Layers3, Lightbulb, LockKeyhole, Menu, Play, Plus,
+  RotateCcw, Settings2, ShieldCheck, Sparkles, Terminal, Trash2, WandSparkles, X,
 } from 'lucide-react';
 
 type ModuleId = 'models' | 'prompt' | 'testing' | 'architecture' | 'tools' | 'decision';
@@ -13,6 +13,7 @@ type TestCase = { name: string; issue: string; expect: 'bug' | 'feature_request'
 type RequestLogItem = { id: number; label: string; model: string; mode: 'Canlı API' | 'Demo önizlemesi'; request: string; response?: string; status?: number };
 type DecisionType = 'predicate' | 'choice' | 'score';
 type DecisionPreset = { id: string; title: string; type: DecisionType; description: string; input: string; instructions: string; questionName: string; choices?: { value: string; description: string }[]; levels?: { label: string; description: string }[] };
+type LabTool = { id: string; name: string; description: string; parametersJson: string; demoArgumentsJson: string; outputJson: string; builtin?: 'get_assignment_deadline' | 'calculate_grade' };
 
 const modules: { id: ModuleId; title: string; subtitle: string; icon: typeof FlaskConical; color: string; time: string }[] = [
   { id: 'models', title: 'Model seçimi', subtitle: 'Göreve uygun modeli bul', icon: ArrowLeftRight, color: 'blue', time: '5 dk' },
@@ -51,9 +52,9 @@ const defaultTestCases: TestCase[] = [
   { name: 'Boş girdi', issue: '', expect: 'question', severity: 'low', needsHuman: true },
 ];
 
-const toolSchemas = [
-  { type: 'function', name: 'get_assignment_deadline', description: 'Get the due date for a known course assignment. Use when a student asks when an assignment is due.', strict: true, parameters: { type: 'object', properties: { assignment_id: { type: 'string', enum: ['lab-01', 'project-01'], description: 'Known assignment identifier.' } }, required: ['assignment_id'], additionalProperties: false } },
-  { type: 'function', name: 'calculate_grade', description: 'Calculate a percentage from points earned and maximum points.', strict: true, parameters: { type: 'object', properties: { points: { type: 'number' }, max_points: { type: 'number' } }, required: ['points', 'max_points'], additionalProperties: false } },
+const defaultTools: LabTool[] = [
+  { id: 'deadline', name: 'get_assignment_deadline', description: 'Get the due date for a known course assignment. Use when a student asks when an assignment is due.', parametersJson: pretty({ type: 'object', properties: { assignment_id: { type: 'string', enum: ['lab-01', 'project-01'], description: 'Known assignment identifier.' } }, required: ['assignment_id'], additionalProperties: false }), demoArgumentsJson: pretty({ assignment_id: 'lab-01' }), outputJson: pretty({ assignment_id: '{{args.assignment_id}}', due_at: '{{tool_result}}' }), builtin: 'get_assignment_deadline' },
+  { id: 'grade', name: 'calculate_grade', description: 'Calculate a percentage from points earned and maximum points.', parametersJson: pretty({ type: 'object', properties: { points: { type: 'number' }, max_points: { type: 'number' } }, required: ['points', 'max_points'], additionalProperties: false }), demoArgumentsJson: pretty({ points: 65, max_points: 80 }), outputJson: pretty({ percentage: '{{tool_result}}' }), builtin: 'calculate_grade' },
 ];
 
 async function openAIResponse(apiKey: string, model: string, input: any, extra: Record<string, any> = {}, onRawResponse?: (status: number, raw: string) => void): Promise<any> {
@@ -104,6 +105,79 @@ function outputText(data: any): string {
 }
 function responseResult(data: any): RunResult { return { text: outputText(data), usage: data.usage, id: data.id, latencyMs: data._latencyMs }; }
 function pretty(value: unknown) { return JSON.stringify(value, null, 2); }
+function strictSchemaIssue(schema: any, path = 'parameters'): string | null {
+  if (schema?.type === 'object') {
+    if (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) return `${path}: object şeması properties içermeli.`;
+    if (!Array.isArray(schema.required) || Object.keys(schema.properties).some((key) => !schema.required.includes(key))) return `${path}: strict şemada tüm properties required listesinde olmalı.`;
+    if (schema.additionalProperties !== false) return `${path}: additionalProperties false olmalı.`;
+    for (const [key, child] of Object.entries(schema.properties)) {
+      const problem = strictSchemaIssue(child, `${path}.${key}`);
+      if (problem) return problem;
+    }
+  }
+  if (schema?.type === 'array' && schema.items) return strictSchemaIssue(schema.items, `${path}[]`);
+  return null;
+}
+function toOpenAITools(definitions: LabTool[]) {
+  const names = new Set<string>();
+  return definitions.map((tool) => {
+    const name = tool.name.trim();
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) throw new Error(`Geçersiz function adı: “${name || '(boş)'}”. Harf, sayı, _ ve - kullan; en fazla 64 karakter.`);
+    if (names.has(name)) throw new Error(`Function adları benzersiz olmalı: ${name}`);
+    names.add(name);
+    let parameters: any;
+    try { parameters = JSON.parse(tool.parametersJson); } catch { throw new Error(`${name}: Parametre şeması geçerli JSON olmalı.`); }
+    if (parameters?.type !== 'object') throw new Error(`${name}: Parametre şeması type: object olmalı.`);
+    const schemaIssue = strictSchemaIssue(parameters);
+    if (schemaIssue) throw new Error(`${name}: ${schemaIssue}`);
+    return { type: 'function', name, description: tool.description, strict: true, parameters };
+  });
+}
+function schemaIssues(value: any, schema: any, path = 'arguments'): string[] {
+  if (!schema || typeof schema !== 'object') return [];
+  const issues: string[] = [];
+  const type = schema.type;
+  const valid = type === 'object' ? value !== null && typeof value === 'object' && !Array.isArray(value)
+    : type === 'array' ? Array.isArray(value)
+    : type === 'integer' ? Number.isInteger(value)
+    : type === 'number' ? typeof value === 'number' && Number.isFinite(value)
+    : type === 'string' ? typeof value === 'string'
+    : type === 'boolean' ? typeof value === 'boolean'
+    : true;
+  if (!valid) return [`${path} ${type} türünde olmalı.`];
+  if (schema.enum && !schema.enum.includes(value)) issues.push(`${path} izin verilen değerlerden biri olmalı: ${schema.enum.join(', ')}.`);
+  if (type === 'object') {
+    for (const key of schema.required || []) if (!(key in value)) issues.push(`${path}.${key} zorunlu.`);
+    for (const [key, item] of Object.entries(value)) {
+      if (!(key in (schema.properties || {})) && schema.additionalProperties === false) issues.push(`${path}.${key} tanımlı değil.`);
+      else if (schema.properties?.[key]) issues.push(...schemaIssues(item, schema.properties[key], `${path}.${key}`));
+    }
+  }
+  if (type === 'array' && schema.items) value.forEach((item: any, index: number) => issues.push(...schemaIssues(item, schema.items, `${path}[${index}]`)));
+  return issues;
+}
+function localToolOutput(tool: LabTool, args: any): string {
+  let toolResult: string | undefined;
+  if (tool.builtin === 'get_assignment_deadline') toolResult = ({ 'lab-01': '22 Ekim, 23:59', 'project-01': '5 Kasım, 23:59' } as Record<string, string>)[args.assignment_id] || 'Bu ödev bulunamadı.';
+  if (tool.builtin === 'calculate_grade') {
+    if (args.max_points <= 0 || args.points < 0 || args.points > args.max_points) throw new Error('Puan aralığı geçerli değil; yerel tool çalıştırılmadı.');
+    toolResult = `${Math.round((args.points / args.max_points) * 100)}%`;
+  }
+  let output: any;
+  try { output = JSON.parse(tool.outputJson); } catch { throw new Error(`${tool.name}: Yerel çıktı şablonu geçerli JSON olmalı.`); }
+  const resolve = (value: any): any => {
+    if (typeof value === 'string') {
+      const exact = value.match(/^\{\{(args(?:\.[a-zA-Z0-9_-]+)*|tool_result)\}\}$/);
+      const lookup = (path: string) => path === 'tool_result' ? toolResult : path.slice(5).split('.').reduce((current: any, key: string) => current?.[key], args);
+      if (exact) { const resolved = lookup(exact[1]); return resolved === undefined ? value : resolved; }
+      return value.replace(/\{\{(args(?:\.[a-zA-Z0-9_-]+)*|tool_result)\}\}/g, (match, path) => { const resolved = lookup(path); return resolved === undefined ? match : String(resolved); });
+    }
+    if (Array.isArray(value)) return value.map(resolve);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolve(item)]));
+    return value;
+  };
+  return JSON.stringify(resolve(output));
+}
 
 export default function App() {
   const [active, setActive] = useState<ModuleId>('models');
@@ -137,6 +211,8 @@ export default function App() {
   const [toolQuestion, setToolQuestion] = useState('Lab 01 ne zaman teslim?');
   const [toolInstruction, setToolInstruction] = useState('Öğrenci sorusunu yanıtlamak için uygun yerel aracı seç. Yalnızca bu araçları kullan; gerekli argümanları doğru çıkar.');
   const [toolChoice, setToolChoice] = useState('auto');
+  const [toolDefinitions, setToolDefinitions] = useState<LabTool[]>(defaultTools);
+  const [demoToolId, setDemoToolId] = useState(defaultTools[0].id);
   const [decisionThreshold, setDecisionThreshold] = useState(55);
   const [decisionModel, setDecisionModel] = useState('gpt-6-luna');
   const [decisionPresetId, setDecisionPresetId] = useState(decisionPresets[0].id);
@@ -176,6 +252,17 @@ export default function App() {
   };
   const recordResponse = (id: number, response: string, status?: number) => setRequestLog((items) => items.map((item) => item.id === id ? { ...item, response, status } : item));
   const updateTestCase = (index: number, patch: Partial<TestCase>) => setTestCases((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  const updateLabTool = (id: string, patch: Partial<LabTool>) => setToolDefinitions((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  const addLabTool = () => {
+    const tool: LabTool = { id: `custom-${Date.now()}`, name: 'lookup_course_room', description: 'Look up a room for a course.', parametersJson: pretty({ type: 'object', properties: { course_code: { type: 'string', description: 'Course code, for example CS101.' } }, required: ['course_code'], additionalProperties: false }), demoArgumentsJson: pretty({ course_code: 'CS101' }), outputJson: pretty({ course_code: '{{args.course_code}}', room: 'B-204', source: 'Local demo fixture' }) };
+    setToolDefinitions((items) => [...items, tool]);
+    setDemoToolId(tool.id);
+  };
+  const removeLabTool = (id: string) => {
+    const next = toolDefinitions.filter((item) => item.id !== id);
+    setToolDefinitions(next);
+    if (demoToolId === id) setDemoToolId(next[0]?.id || '');
+  };
 
   const runCall = async (text: string, selectedModel = model, schema = false, label = 'Responses API') => {
     const extra = schema ? { text: { format: { type: 'json_schema', name: 'issue_triage', strict: true, schema: { type: 'object', properties: { category: { type: 'string', enum: ['bug', 'feature_request', 'question'] }, severity: { type: 'string', enum: ['low', 'medium', 'high'] }, needs_human: { type: 'boolean' } }, required: ['category', 'severity', 'needs_human'], additionalProperties: false } } } } : {};
@@ -281,25 +368,33 @@ export default function App() {
     setGuideStep(2);
   });
   const runTools = () => beginRun(async () => {
-    const localFns: Record<string, (args: any) => string> = {
-      get_assignment_deadline: ({ assignment_id }) => ({ 'lab-01': 'Lab 01 · 22 Ekim, 23:59', 'project-01': 'Project 01 · 5 Kasım, 23:59' } as Record<string, string>)[assignment_id] || 'Bu ödev bulunamadı.',
-      calculate_grade: ({ points, max_points }) => max_points > 0 ? `${Math.round((points / max_points) * 100)}%` : 'Maksimum puan sıfırdan büyük olmalı.',
-    };
+    const tools = toOpenAITools(toolDefinitions);
+    if (!tools.length) throw new Error('Çalıştırmak için en az bir function tanımla.');
+    const toolsByName = new Map(toolDefinitions.map((tool, index) => [tool.name.trim(), { definition: tool, schema: tools[index].parameters }]));
     const timeline: TraceItem[] = [{ label: 'Kullanıcı isteği', detail: toolQuestion, ok: true }];
     let finalText = ''; let inputTokens = 0; let outputTokens = 0; let totalLatency = 0;
     let input: any[] = [{ role: 'system', content: toolInstruction }, { role: 'user', content: toolQuestion }];
     if (!apiKey.trim()) {
-      const requestId = recordRequest('Tool calling · demo isteği', model, input, { tools: toolSchemas, tool_choice: toolChoice, parallel_tool_calls: false });
+      const requestId = recordRequest('Tool calling · demo isteği', model, input, { tools, tool_choice: toolChoice, parallel_tool_calls: false });
       await new Promise((resolve) => setTimeout(resolve, 600));
-      const args = toolQuestion.toLowerCase().includes('project') ? { assignment_id: 'project-01' } : { assignment_id: 'lab-01' };
-      timeline.push({ label: 'Model tool call isteği', detail: `get_assignment_deadline(${pretty(args)})`, ok: true });
-      const toolOutput = localFns.get_assignment_deadline(args);
-      timeline.push({ label: 'Uygulama doğruladı ve çalıştırdı', detail: toolOutput, ok: true });
-      recordResponse(requestId, pretty({ mode: 'demo', simulated_output: { name: 'get_assignment_deadline', arguments: args, tool_output: toolOutput }, note: 'Demo simülasyonudur; API çağrısı yapılmadı.' }));
-      finalText = `Demo yanıtı: ${toolOutput}`;
+      if (toolChoice === 'none') {
+        finalText = 'tool_choice=none: Bu koşumda hiçbir function çağrılmaz.';
+        recordResponse(requestId, pretty({ mode: 'demo', simulated_response: finalText, note: 'Demo simülasyonudur; API çağrısı yapılmadı.' }));
+      } else {
+        const tool = toolDefinitions.find((item) => item.id === demoToolId) || toolDefinitions[0];
+        let args: any;
+        try { args = JSON.parse(tool.demoArgumentsJson); } catch { throw new Error(`${tool.name}: Demo argümanları geçerli JSON olmalı.`); }
+        const issues = schemaIssues(args, toolsByName.get(tool.name)!.schema);
+        if (issues.length) throw new Error(`Demo argümanları şemaya uymuyor: ${issues.join(' ')}`);
+        timeline.push({ label: 'Model tool call isteği · demo', detail: `${tool.name}(${pretty(args)})`, ok: true });
+        const toolOutput = localToolOutput(tool, args);
+        timeline.push({ label: 'Uygulama şemayı doğruladı ve yerel handler’ı çalıştırdı', detail: toolOutput, ok: true });
+        recordResponse(requestId, pretty({ mode: 'demo', simulated_tool_call: { name: tool.name, arguments: args }, simulated_tool_output: JSON.parse(toolOutput), note: 'Demo simülasyonudur; API çağrısı yapılmadı.' }));
+        finalText = `Demo tool çıktısı: ${toolOutput}`;
+      }
     } else {
       for (let turn = 0; turn < 4; turn++) {
-        const extra = { tools: toolSchemas, tool_choice: toolChoice, parallel_tool_calls: false };
+        const extra = { tools, tool_choice: toolChoice, parallel_tool_calls: false };
         const requestId = recordRequest(`Tool calling · API turu ${turn + 1}`, model, input, extra);
         const response = await openAIResponse(apiKey, model, input, extra, (status, raw) => recordResponse(requestId, raw, status));
         inputTokens += response.usage?.input_tokens || 0; outputTokens += response.usage?.output_tokens || 0; totalLatency += response._latencyMs || 0;
@@ -309,10 +404,12 @@ export default function App() {
         for (const call of calls) {
           timeline.push({ label: 'Model tool call isteği', detail: `${call.name}(${call.arguments})`, ok: true });
           let args: any; try { args = JSON.parse(call.arguments); } catch { throw new Error('Tool argümanları JSON olarak okunamadı.'); }
-          if (!Object.hasOwn(localFns, call.name)) throw new Error(`İzin verilmeyen tool: ${call.name}`);
-          if (call.name === 'calculate_grade' && (args.max_points <= 0 || args.points < 0 || args.points > args.max_points)) throw new Error('Puan aralığı geçerli değil; yerel tool çalıştırılmadı.');
-          const output = localFns[call.name](args);
-          timeline.push({ label: 'Uygulama doğruladı ve çalıştırdı', detail: output, ok: true });
+          const selectedTool = toolsByName.get(call.name);
+          if (!selectedTool) throw new Error(`İzin verilmeyen tool: ${call.name}`);
+          const issues = schemaIssues(args, selectedTool.schema);
+          if (issues.length) throw new Error(`Tool argümanları doğrulanamadı: ${issues.join(' ')}`);
+          const output = localToolOutput(selectedTool.definition, args);
+          timeline.push({ label: 'Uygulama şemayı doğruladı ve yerel handler’ı çalıştırdı', detail: output, ok: true });
           input.push({ type: 'function_call_output', call_id: call.call_id, output });
         }
       }
@@ -502,11 +599,16 @@ export default function App() {
 
             {active === 'tools' && <>
               <div className="section-heading"><div><span className="eyebrow">TOOL CALLING</span><h2>İstek ile yürütmeyi ayır</h2></div><button className="text-help" title="Model aracı seçer ve argüman önerir; uygulama doğrular ve çalıştırır."><CircleHelp size={15}/> Neden?</button></div>
-              <p className="section-description">Model tool call üretsin. Sonra argümanları gözle, allowlist ile doğrula ve yerel demo aracı çalıştır.</p>
-              <div className={`tool-config ${isHighlighted(0) ? 'highlight' : ''}`}><div className="tool-config-head"><div><span className="live-dot"/><strong>Yerel tool registry</strong></div><span className="tag tag-green">2 SAFE TOOLS</span></div><div className="tool-def"><div className="tool-glyph">ƒ</div><div><strong>get_assignment_deadline</strong><small>Ödev teslim tarihini getirir.</small></div><Braces size={15}/></div><div className="tool-def"><div className="tool-glyph">ƒ</div><div><strong>calculate_grade</strong><small>Puan yüzdesini hesaplar.</small></div><Braces size={15}/></div></div>
+              <p className="section-description">Function tanımını ve argüman şemasını yaz. Model çağrısını uygulama doğrular; seçtiğin function için tanımlı yerel handler çıktısını döndürür.</p>
+              <div className={`tool-config ${isHighlighted(0) ? 'highlight' : ''}`}><div className="tool-config-head"><div><span className="live-dot"/><strong>Function registry</strong></div><div className="registry-actions"><span className="tag tag-green">{toolDefinitions.length} FUNCTION</span><button className="add-tool-button" onClick={addLabTool}><Plus size={13}/> Function ekle</button></div></div>
+                {toolDefinitions.map((tool) => <article className="lab-tool-card" key={tool.id}><div className="lab-tool-heading"><div className="tool-glyph">ƒ</div><strong>{tool.name || 'Yeni function'}</strong><span>{tool.builtin ? 'ÖRNEK' : 'ÖZEL'}</span><button onClick={() => removeLabTool(tool.id)} aria-label={`${tool.name || 'Function'} sil`} title="Function’ı kaldır"><Trash2 size={14}/></button></div><div className="lab-tool-fields"><label>Function adı<input value={tool.name} onChange={(e) => updateLabTool(tool.id, { name: e.target.value })}/></label><label>Açıklama<input value={tool.description} onChange={(e) => updateLabTool(tool.id, { description: e.target.value })}/></label><label>Parametre şeması · JSON<textarea className="tool-json-editor" value={tool.parametersJson} onChange={(e) => updateLabTool(tool.id, { parametersJson: e.target.value })}/></label><label>Demo argümanları · JSON<textarea className="tool-json-editor compact" value={tool.demoArgumentsJson} onChange={(e) => updateLabTool(tool.id, { demoArgumentsJson: e.target.value })}/></label><label>Yerel handler çıktısı · JSON şablonu<textarea className="tool-json-editor compact" value={tool.outputJson} onChange={(e) => updateLabTool(tool.id, { outputJson: e.target.value })}/><small><code>{'{{args.field}}'}</code> argüman değerini kullanır. Örnek function’larda <code>{'{{tool_result}}'}</code> hesaplanan sonucu ekler.</small></label></div></article>)}
+                {!toolDefinitions.length && <div className="empty-tools">Henüz function yok. Çalıştırmadan önce bir tane ekle.</div>}
+                <p className="registry-note"><LockKeyhole size={13}/> Function handler’ları tarayıcıda JSON şablonuyla çalışır; dış sisteme işlem yapmaz. Canlı modda yalnızca model isteği OpenAI’a gider.</p>
+              </div>
               <label className="request-prompt-field">Model talimatı<textarea value={toolInstruction} onChange={(e) => setToolInstruction(e.target.value)}/></label>
-              <label className={`field-label ${isHighlighted(1) ? 'highlight-label' : ''}`}>Kullanıcı isteği<input value={toolQuestion} onChange={(e) => setToolQuestion(e.target.value)}/><small>Deneyebilirsin: “Lab 01 ne zaman teslim?” veya “80 üzerinden 65 aldım.”</small></label>
-              <div className="tool-controls"><label>Tool choice<select value={toolChoice} onChange={(e) => setToolChoice(e.target.value)}><option value="auto">auto · model seçer</option><option value="required">required · tool çağırmalı</option><option value="none">none · tool kapalı</option></select></label><span><LockKeyhole size={13}/> Sadece yerel örnek fonksiyonlar</span></div>
+              <label className={`field-label ${isHighlighted(1) ? 'highlight-label' : ''}`}>Kullanıcı isteği<input value={toolQuestion} onChange={(e) => setToolQuestion(e.target.value)}/><small>İsteğini tanımladığın function’lardan biriyle eşleştir.</small></label>
+              <div className="tool-controls"><label>Tool choice<select value={toolChoice} onChange={(e) => setToolChoice(e.target.value)}><option value="auto">auto · model seçer</option><option value="required">required · tool çağırmalı</option><option value="none">none · tool kapalı</option></select></label><span><LockKeyhole size={13}/> Argümanlar şemaya göre doğrulanır</span></div>
+              {demoMode && toolDefinitions.length > 0 && <label className="demo-tool-picker">Demo’da çalıştırılacak function<select value={toolDefinitions.some((tool) => tool.id === demoToolId) ? demoToolId : toolDefinitions[0].id} onChange={(e) => setDemoToolId(e.target.value)}>{toolDefinitions.map((tool) => <option key={tool.id} value={tool.id}>{tool.name || 'İsimsiz function'}</option>)}</select><small>API anahtarı yokken seçtiğin function’ın demo argümanları ve yerel handler çıktısı kullanılır.</small></label>}
               <button className="primary-button" disabled={running} onClick={runTools}><Play size={15}/>{running ? 'Tool akışı çalışıyor…' : 'Tool akışını çalıştır'}</button>
             </>}
 
