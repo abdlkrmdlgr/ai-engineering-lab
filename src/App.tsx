@@ -30,16 +30,48 @@ const recommendedModels = [
   { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
 ];
 
-// Standard, short-context text prices per million tokens (USD). Unknown model IDs
-// intentionally have no estimate rather than inheriting another model's rate.
+// Standard text prices per million tokens (USD). Keep model families explicit;
+// new IDs without a verified rate are never assigned an approximate family rate.
 const modelPricing: Record<string, { input: number; cachedInput: number; output: number }> = {
-  'gpt-6-astra': { input: 5, cachedInput: 0.5, output: 25 },
-  'gpt-6.1-sol': { input: 1, cachedInput: 0.05, output: 5 },
-  'gpt-6-luna': { input: 0.05, cachedInput: 0.005, output: 0.25 },
+  'gpt-6-astra': { input: 10, cachedInput: 1, output: 50 },
+  'gpt-6.1-sol': { input: 2, cachedInput: 0.1, output: 10 },
+  'gpt-6-sol': { input: 2, cachedInput: 0.1, output: 10 },
+  'gpt-6-luna': { input: 0.1, cachedInput: 0.01, output: 0.5 },
+  'gpt-5.6-sol': { input: 4, cachedInput: 0.4, output: 20 },
+  'gpt-5.6-terra': { input: 2, cachedInput: 0.2, output: 12 },
+  'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, output: 1.2 },
+  'gpt-5.5': { input: 5, cachedInput: 0.5, output: 30 },
+  'gpt-5.5-pro': { input: 30, cachedInput: 30, output: 180 },
+  'gpt-5.4': { input: 2.5, cachedInput: 0.25, output: 15 },
+  'gpt-5.4-mini': { input: 0.75, cachedInput: 0.075, output: 4.5 },
+  'gpt-5.4-nano': { input: 0.2, cachedInput: 0.02, output: 1.25 },
+  'gpt-5-mini': { input: 0.25, cachedInput: 0.025, output: 2 },
+  'gpt-5-nano': { input: 0.05, cachedInput: 0.005, output: 0.4 },
+  'gpt-5.3-codex': { input: 1.75, cachedInput: 0.175, output: 14 },
+  'gpt-4.1': { input: 2, cachedInput: 0.5, output: 8 },
+  'gpt-4.1-mini': { input: 0.4, cachedInput: 0.1, output: 1.6 },
+  'gpt-4.1-nano': { input: 0.1, cachedInput: 0.025, output: 0.4 },
+  'gpt-4o': { input: 2.5, cachedInput: 1.25, output: 10 },
+  'gpt-4o-mini': { input: 0.15, cachedInput: 0.075, output: 0.6 },
+  'o3': { input: 2, cachedInput: 0.5, output: 8 },
+  'o3-pro': { input: 20, cachedInput: 20, output: 80 },
+  'o3-mini': { input: 1.1, cachedInput: 0.55, output: 4.4 },
+  'o4-mini': { input: 1.1, cachedInput: 0.275, output: 4.4 },
 };
 
+function getModelPricing(modelId: string) {
+  if (modelPricing[modelId]) return modelPricing[modelId];
+  const family = Object.keys(modelPricing).sort((a, b) => b.length - a.length).find((id) => modelId.startsWith(`${id}-`));
+  return family ? modelPricing[family] : undefined;
+}
+
+function modelPriceLabel(modelId: string): string {
+  const pricing = getModelPricing(modelId);
+  return pricing ? `$${pricing.input} giriş · $${pricing.output} çıkış / 1M token` : 'Fiyat kataloğunda yok';
+}
+
 function estimatedCost(modelId: string, usage?: RunResult['usage']): number | null {
-  const pricing = modelPricing[modelId];
+  const pricing = getModelPricing(modelId);
   if (!pricing || usage?.input_tokens == null || usage.output_tokens == null) return null;
   const input = usage.input_tokens;
   const cached = Math.min(input, usage.input_tokens_details?.cached_tokens ?? 0);
@@ -48,6 +80,7 @@ function estimatedCost(modelId: string, usage?: RunResult['usage']): number | nu
 
 function formatCost(value: number | null): string {
   if (value == null) return 'Bilinmiyor';
+  if (value > 0 && value < 0.0000005) return '<$0.000001';
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 6, maximumFractionDigits: 6 }).format(value);
 }
 
@@ -668,19 +701,20 @@ export default function App() {
                 <label className="request-prompt-field">İki modele gönderilecek prompt<textarea value={modelComparePrompt} onChange={(e) => setModelComparePrompt(e.target.value)}/></label>
                 <div className="model-pickers">
                   <label>MODEL A<div className="select-wrap"><select value={modelA} onChange={(e) => setModelA(e.target.value)} aria-label="Model A">
-                    {availableModels.map((item) => <option key={item.id} value={item.id} disabled={item.id === modelB}>{item.label} · {item.id}</option>)}
+                    {availableModels.map((item) => <option key={item.id} value={item.id} disabled={item.id === modelB}>{item.label} · {item.id} · {modelPriceLabel(item.id)}</option>)}
                   </select><span aria-hidden="true" style={{ position: 'absolute', right: 9, top: '50%', transform: 'translateY(-50%)', zIndex: 2, color: '#667080', fontSize: 18, lineHeight: 1, pointerEvents: 'none' }}>⌄</span></div></label>
                   <div className="versus">VS</div>
                   <label>MODEL B<div className="select-wrap"><select value={modelB} onChange={(e) => setModelB(e.target.value)} aria-label="Model B">
-                    {availableModels.map((item) => <option key={item.id} value={item.id} disabled={item.id === modelA}>{item.label} · {item.id}</option>)}
+                    {availableModels.map((item) => <option key={item.id} value={item.id} disabled={item.id === modelA}>{item.label} · {item.id} · {modelPriceLabel(item.id)}</option>)}
                   </select><span aria-hidden="true" style={{ position: 'absolute', right: 9, top: '50%', transform: 'translateY(-50%)', zIndex: 2, color: '#667080', fontSize: 18, lineHeight: 1, pointerEvents: 'none' }}>⌄</span></div></label>
                 </div>
+                <div className="selected-model-prices"><span><strong>Model A</strong>{modelPriceLabel(modelA)}</span><span><strong>Model B</strong>{modelPriceLabel(modelB)}</span></div>
                 <div style={{ font: '9px var(--mono)', color: '#969eaa', margin: '-6px 0 9px' }}>{demoMode ? 'Demo için örnek model listesi' : `${availableModels.length} metin modeli · API anahtarının erişimine göre`}</div>
                 <div className="locked-note"><LockKeyhole size={13}/> Aynı girdi ve görev talimatı iki model için de kullanılır</div>
                 <button className="primary-button full" disabled={running || loadingModels || availableModels.length < 2} onClick={runCompare}><Play size={15}/>{running ? 'Modeller çalışıyor…' : loadingModels ? 'Modeller yükleniyor…' : 'İki modeli karşılaştır'}<span>↗</span></button>
               </div>
               <div className="metric-intro"><span className="metric-icon"><Gauge size={15}/></span><div><strong>Kararı tek metrikle verme</strong><p>Kaliteyi; girdi/çıktı tokenı, gecikme ve maliyetle birlikte değerlendir.</p></div><button className="mini-link" onClick={() => setGuideStep(2)}>İpucu <ArrowRight size={13}/></button></div>
-              {compare && <div className="compare-grid"><div className="compare-heading"><strong>Koşumları kıyasla</strong><span>Aynı girdi · aynı talimat</span></div>{compare.map((item, index) => { const modelId = index === 0 ? modelA : modelB; const inputTokens = item.usage?.input_tokens; const outputTokens = item.usage?.output_tokens; return <article className="compare-result" key={index}><div className="compare-model-name"><strong>{modelId}</strong></div><div className="compare-metrics"><div><span>Girdi tokenı</span><strong>{inputTokens?.toLocaleString('tr-TR') ?? '—'}</strong></div><div><span>Çıktı tokenı</span><strong>{outputTokens?.toLocaleString('tr-TR') ?? '—'}</strong></div><div><span>Süre</span><strong>{item.latencyMs != null ? `${Math.round(item.latencyMs)} ms` : '—'}</strong></div><div><span>Tahmini maliyet</span><strong title={modelPricing[modelId] ? 'Standart kısa-context fiyatıyla hesaplandı' : 'Bu model için fiyat eşlemesi bulunmuyor'}>{formatCost(estimatedCost(modelId, item.usage))}</strong></div></div><p>{item.text || 'Yanıt alınamadı.'}</p></article>})}<div className="compare-pricing-note">Maliyet tahminidir: standart kısa-context metin fiyatları kullanılır; API’nin bildirdiği cached tokenlar indirimli hesaplanır. Diğer modeller “Bilinmiyor” görünür. <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI fiyatlandırması</a></div></div>}
+              {compare && <div className="compare-grid"><div className="compare-heading"><strong>Koşumları kıyasla</strong><span>Aynı girdi · aynı talimat</span></div>{compare.map((item, index) => { const modelId = index === 0 ? modelA : modelB; const inputTokens = item.usage?.input_tokens; const outputTokens = item.usage?.output_tokens; return <article className="compare-result" key={index}><div className="compare-model-name"><strong>{modelId}</strong></div><div className="compare-metrics"><div><span>Girdi tokenı</span><strong>{inputTokens?.toLocaleString('tr-TR') ?? '—'}</strong></div><div><span>Çıktı tokenı</span><strong>{outputTokens?.toLocaleString('tr-TR') ?? '—'}</strong></div><div><span>Süre</span><strong>{item.latencyMs != null ? `${Math.round(item.latencyMs)} ms` : '—'}</strong></div><div><span>Tahmini maliyet</span><strong title={getModelPricing(modelId) ? `Standart kısa-context fiyatı: ${modelPriceLabel(modelId)}` : 'Bu model için doğrulanmış fiyat eşlemesi bulunmuyor'}>{formatCost(estimatedCost(modelId, item.usage))}</strong></div></div><p>{item.text || 'Yanıt alınamadı.'}</p></article>})}<div className="compare-pricing-note">Tahmini maliyet, API kullanımındaki tokenlarla ve standart fiyatlarla hesaplanır. API model fiyatı döndürmediği için desteklenen modellerin 1M token birim fiyatları seçim alanında da gösterilir. <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI fiyatlandırması</a></div></div>}
             </>}
 
             {active === 'prompt' && <>
