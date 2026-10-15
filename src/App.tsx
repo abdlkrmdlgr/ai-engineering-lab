@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 type ModuleId = 'models' | 'prompt' | 'testing' | 'architecture' | 'tools' | 'decision';
-type RunResult = { text: string; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number }; id?: string; latencyMs?: number };
+type RunResult = { text: string; usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number; input_tokens_details?: { cached_tokens?: number } }; id?: string; latencyMs?: number };
 type TraceItem = { label: string; detail: string; ok?: boolean };
 type TestCase = { name: string; issue: string; expect: 'bug' | 'feature_request' | 'question'; severity: 'low' | 'medium' | 'high'; needsHuman: boolean };
 type RequestLogItem = { id: number; label: string; model: string; mode: 'Canlı API' | 'Demo önizlemesi'; request: string; response?: string; status?: number };
@@ -29,6 +29,27 @@ const recommendedModels = [
   { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' },
   { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
 ];
+
+// Standard, short-context text prices per million tokens (USD). Unknown model IDs
+// intentionally have no estimate rather than inheriting another model's rate.
+const modelPricing: Record<string, { input: number; cachedInput: number; output: number }> = {
+  'gpt-6-astra': { input: 5, cachedInput: 0.5, output: 25 },
+  'gpt-6.1-sol': { input: 1, cachedInput: 0.05, output: 5 },
+  'gpt-6-luna': { input: 0.05, cachedInput: 0.005, output: 0.25 },
+};
+
+function estimatedCost(modelId: string, usage?: RunResult['usage']): number | null {
+  const pricing = modelPricing[modelId];
+  if (!pricing || usage?.input_tokens == null || usage.output_tokens == null) return null;
+  const input = usage.input_tokens;
+  const cached = Math.min(input, usage.input_tokens_details?.cached_tokens ?? 0);
+  return ((input - cached) * pricing.input + cached * pricing.cachedInput + usage.output_tokens * pricing.output) / 1_000_000;
+}
+
+function formatCost(value: number | null): string {
+  if (value == null) return 'Bilinmiyor';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 6, maximumFractionDigits: 6 }).format(value);
+}
 
 const decisionPresets: DecisionPreset[] = [
   { id: 'predicate', title: 'Acil inceleme gerekir mi?', type: 'predicate', description: 'Bir koşulun olasılığını ölç · 0–1 probability', input: 'Başvuru sahibi, bu dönem için onaylanan burs ödemesinin 14 gündür hesabına geçmediğini bildiriyor. Kira ödemesi yarın; gecikme sürerse barınma riski yaşayacağını belirtiyor. Başvuru numarası B-2048. Ödeme durumu henüz sistemden doğrulanmadı; başvuru sahibinin başka bir gelir kaynağı olup olmadığı bilinmiyor.', instructions: 'Soru: Bu vakanın bugün bir insan tarafından öncelikli incelenmesi gerekiyor mu? Ödeme gecikmesinin süresini, bildirilen yakın zaman baskısını ve olası barınma etkisini birlikte değerlendir. Yalnızca girdideki olguları kullan; ödeme durumunu veya başvuru sahibinin diğer kaynaklarını varsayma. Probability, incelemeyi önceliklendiren koşulun doğru olma tahminidir; uygunluk kararı, ödeme onayı veya otomatik ret değildir. Eksik bilgiyi görünür kıl ve sonucu yalnızca insan incelemesine yönlendirme sinyali olarak ele al.', questionName: 'urgent_human_review' },
@@ -658,8 +679,8 @@ export default function App() {
                 <div className="locked-note"><LockKeyhole size={13}/> Aynı girdi ve görev talimatı iki model için de kullanılır</div>
                 <button className="primary-button full" disabled={running || loadingModels || availableModels.length < 2} onClick={runCompare}><Play size={15}/>{running ? 'Modeller çalışıyor…' : loadingModels ? 'Modeller yükleniyor…' : 'İki modeli karşılaştır'}<span>↗</span></button>
               </div>
-              <div className="metric-intro"><span className="metric-icon"><Gauge size={15}/></span><div><strong>Kararı tek metrikle verme</strong><p>Göreve göre başarı oranı, gecikme ve token kullanımını birlikte tart.</p></div><button className="mini-link" onClick={() => setGuideStep(2)}>İpucu <ArrowRight size={13}/></button></div>
-              {compare && <div className="compare-grid"><div className="compare-heading"><strong>Koşumları kıyasla</strong><span>Aynı girdi · aynı talimat</span></div>{compare.map((item, index) => <article className="compare-result" key={index}><div><strong>{index === 0 ? modelA : modelB}</strong><span>{item.latencyMs ? `${Math.round(item.latencyMs)} ms` : '—'} · {item.usage?.total_tokens ?? ((item.usage?.input_tokens || 0) + (item.usage?.output_tokens || 0))} token</span></div><p>{item.text || 'Yanıt alınamadı.'}</p></article>)}</div>}
+              <div className="metric-intro"><span className="metric-icon"><Gauge size={15}/></span><div><strong>Kararı tek metrikle verme</strong><p>Kaliteyi; girdi/çıktı tokenı, gecikme ve maliyetle birlikte değerlendir.</p></div><button className="mini-link" onClick={() => setGuideStep(2)}>İpucu <ArrowRight size={13}/></button></div>
+              {compare && <div className="compare-grid"><div className="compare-heading"><strong>Koşumları kıyasla</strong><span>Aynı girdi · aynı talimat</span></div>{compare.map((item, index) => { const modelId = index === 0 ? modelA : modelB; const inputTokens = item.usage?.input_tokens; const outputTokens = item.usage?.output_tokens; return <article className="compare-result" key={index}><div className="compare-model-name"><strong>{modelId}</strong></div><div className="compare-metrics"><div><span>Girdi tokenı</span><strong>{inputTokens?.toLocaleString('tr-TR') ?? '—'}</strong></div><div><span>Çıktı tokenı</span><strong>{outputTokens?.toLocaleString('tr-TR') ?? '—'}</strong></div><div><span>Süre</span><strong>{item.latencyMs != null ? `${Math.round(item.latencyMs)} ms` : '—'}</strong></div><div><span>Tahmini maliyet</span><strong title={modelPricing[modelId] ? 'Standart kısa-context fiyatıyla hesaplandı' : 'Bu model için fiyat eşlemesi bulunmuyor'}>{formatCost(estimatedCost(modelId, item.usage))}</strong></div></div><p>{item.text || 'Yanıt alınamadı.'}</p></article>})}<div className="compare-pricing-note">Maliyet tahminidir: standart kısa-context metin fiyatları kullanılır; API’nin bildirdiği cached tokenlar indirimli hesaplanır. Diğer modeller “Bilinmiyor” görünür. <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noreferrer">OpenAI fiyatlandırması</a></div></div>}
             </>}
 
             {active === 'prompt' && <>
