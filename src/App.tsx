@@ -386,7 +386,7 @@ export default function App() {
   const [decisionInput, setDecisionInput] = useState(decisionPresets[0].input);
   const [decisionChoicesJson, setDecisionChoicesJson] = useState(pretty(decisionPresets[0].choices || []));
   const [decisionLevelsJson, setDecisionLevelsJson] = useState(pretty(decisionPresets[0].levels || []));
-  const [decisionAIResult, setDecisionAIResult] = useState<{ heading: string; value: string; explanation: string; policy?: string } | null>(null);
+  const [decisionAIResult, setDecisionAIResult] = useState<{ heading: string; value: string; explanation: string; policy?: string; latencyMs?: number } | null>(null);
   const [prediction, setPrediction] = useState('');
 
   const currentModule = modules.find((item) => item.id === active)!;
@@ -663,7 +663,7 @@ export default function App() {
       const nearestLevel = Math.max(0, Math.min(levels.length - 1, Math.round(answer.score)));
       view = { heading: 'AĞIRLIKLI PUAN', value: `${answer.score.toFixed(2)} / ${levels.length - 1}`, explanation: `En yakın rubric seviyesi: ${levels[nearestLevel].label} — ${levels[nearestLevel].description}`, policy: 'Puan, sıralı seviyelerin olasılık ağırlıklı ortalamasıdır.' };
     }
-    setDecisionAIResult(view);
+    setDecisionAIResult({ ...view, latencyMs });
     setResult({ text: answerText, latencyMs });
     setGuideStep(2);
   });
@@ -807,7 +807,7 @@ export default function App() {
                 {decisionType === 'score' && <label>Sıralı puan seviyeleri · JSON<textarea value={decisionLevelsJson} onChange={(e) => setDecisionLevelsJson(e.target.value)}/><small>Seviyeleri düşükten yükseğe sırala; her seviye için label ve description gir.</small></label>}
                 <label>Sentetik vaka girdisi<textarea value={decisionInput} onChange={(e) => setDecisionInput(e.target.value)}/></label>
                 <button className="primary-button" disabled={running} onClick={runDecisionAI}><Play size={15}/>{running ? 'Decisions API çalışıyor…' : 'Decisions API ile değerlendir'}</button>
-                {decisionAIResult && <div className="decision-ai-result"><div><span>{decisionAIResult.heading}</span><strong>{decisionAIResult.value}</strong></div><p>{decisionAIResult.explanation}</p>{decisionAIResult.policy && <small>{decisionAIResult.policy}</small>}</div>}
+                {decisionAIResult && <div className="decision-ai-result"><div><span>{decisionAIResult.heading}</span><strong>{decisionAIResult.value}</strong></div><p>{decisionAIResult.explanation}</p>{decisionAIResult.policy && <small>{decisionAIResult.policy}</small>}<div className="decision-ai-duration"><Clock3 size={13}/><span>Çalışma süresi</span><strong>{decisionAIResult.latencyMs != null ? `${Math.round(decisionAIResult.latencyMs)} ms` : '—'}</strong></div></div>}
               </div>
               {decisionType === 'predicate' && <>
                 {guided && <div className="prediction-prompt"><Sparkles size={15}/><span>Eşiği yükseltince false negative sayısı ne olur?</span><div>{['Artar', 'Azalır', 'Değişmez'].map((choice) => <button key={choice} className={prediction === choice ? 'chosen' : ''} onClick={() => setPrediction(choice)}>{choice}</button>)}</div></div>}
