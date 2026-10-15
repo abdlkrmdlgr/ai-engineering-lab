@@ -520,6 +520,7 @@ export default function App() {
       <header className="topbar">
         <div className="breadcrumb"><span>AI Engineering Lab</span><ChevronRight size={14}/><strong>{currentModule.title}</strong></div>
         <div className="top-actions">
+          <a className="presentation-link" href="/sunum"><BookOpen size={14}/> Sunum</a>
           <div className={`connection ${demoMode ? 'demo' : 'connected'}`}><span/>{demoMode ? 'Demo modu' : 'Canlı API modu'}</div>
           <button className="key-button" onClick={() => setKeyModal(true)}><KeyRound size={15}/>{demoMode ? 'API key ekle' : 'Anahtarı yönet'}</button>
           <button className="icon-button" title="Sıfırla" onClick={reset}><RotateCcw size={16}/></button>

@@ -31,3 +31,7 @@ Vite’ın yazdırdığı yerel adresi (genellikle `http://localhost:5173`) aç�
 AI isteği çalıştırıldığında, **Raw API request / response** panelinde ilgili API gövdesi ve ham HTTP yanıtı gösterilir. Authorization başlığı gizlenir; API key hiçbir koşulda log’a yazılmaz. Demo modunda istek gövdesi yalnızca önizlemedir, API’ye gönderilmez; simülasyon çıktısı ayrıca etiketlenir. Demo modundaki Decisions sonucu yerel bir heuristiktir; API çıktısı değildir. Sentetik confusion matrix veri seti, canlı Decisions API çağrısından bağımsızdır.
 
 Her modülde rehberli adımlar, bağlama duyarlı ipuçları, highlight’lar ve serbest deneme modu vardır.
+
+## Sunum
+
+Teorik ders sunumu uygulamada üst çubuktaki **Sunum** bağlantısından veya doğrudan `/sunum` yolundan açılır. Ok tuşlarıyla slaytlar arasında gezilebilir; `N` konuşmacı notlarını açıp kapatır, tam ekran düğmesi sunum görünümünü genişletir. Sunumda model seçimi, prompt yapısı, evaluation, test, mimari, tool calling ve OpenAI Decisions API konuları use case’ler ve kavramsal grafiklerle anlatılır.
