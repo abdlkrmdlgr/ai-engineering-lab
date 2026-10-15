@@ -213,6 +213,13 @@ const defaultTools: LabTool[] = [
   { id: 'grade', name: 'calculate_grade', description: 'Calculate the earned percentage for a student’s assignment from points earned and possible. Use only when both numbers are provided. This tool calculates arithmetic; it does not interpret grading policy, round according to a syllabus, or decide whether the result is a passing grade.', parametersJson: pretty({ type: 'object', properties: { points: { type: 'number', description: 'Points earned by the student.' }, max_points: { type: 'number', description: 'Maximum points possible for the assignment; must be greater than zero.' } }, required: ['points', 'max_points'], additionalProperties: false }), demoArgumentsJson: pretty({ points: 65, max_points: 80 }), outputJson: pretty({ percentage: '{{tool_result}}' }), builtin: 'calculate_grade' },
 ];
 
+const toolQuestionExamples = [
+  { title: 'Lab 01 son teslim tarihini bul', text: 'CS101 Lab 01 için takvimimde 21 Ekim yazıyor, ama sınıf duyurusunda tarihin değişmiş olabileceği söylendi. Sistemde yayımlanan son teslim tarihini kontrol edip tarihi ve hangi ödev için olduğunu söyle.' },
+  { title: 'Ödev puan yüzdesini hesapla', text: 'Lab 01 değerlendirmesinde 80 üzerinden 65 puan aldım. Bunun yüzde kaç olduğunu hesaplayabilir misin? Geçme notu hakkında yorum yapmana gerek yok.' },
+  { title: 'Eksik bilgiyle not hesabı', text: 'Ödevden 65 puan aldım. Yüzdem kaç ve dersi geçiyor muyum?' },
+  { title: 'Tanımlı araçların dışındaki istek', text: 'Bu dönem proje teslim tarihi değişti mi? Sınıf duyurusunda yeni tarihi gördüğümü hatırlıyorum; duyuruyu bulup onaylar mısın?' },
+];
+
 async function openAIResponse(apiKey: string, model: string, input: any, extra: Record<string, any> = {}, onRawResponse?: (status: number, raw: string) => void): Promise<any> {
   const started = performance.now();
   const body = { model, input, store: false, ...extra };
@@ -556,15 +563,25 @@ export default function App() {
         finalText = `Demo tool çıktısı: ${toolOutput}`;
       }
     } else {
+      let toolCallCount = 0;
       for (let turn = 0; turn < 4; turn++) {
-        const extra = { tools, tool_choice: toolChoice, parallel_tool_calls: false };
+        // `required` is for the first response only; after executing its function,
+        // let the model choose whether to call another tool or answer the user.
+        const turnToolChoice = toolChoice === 'required' && turn > 0 ? 'auto' : toolChoice;
+        const extra = { tools, tool_choice: turnToolChoice, parallel_tool_calls: false };
         const requestId = recordRequest(`Tool calling · API turu ${turn + 1}`, model, input, extra);
         const response = await openAIResponse(apiKey, model, input, extra, (status, raw) => recordResponse(requestId, raw, status));
         inputTokens += response.usage?.input_tokens || 0; outputTokens += response.usage?.output_tokens || 0; totalLatency += response._latencyMs || 0;
         const calls = (response.output || []).filter((item: any) => item.type === 'function_call');
-        if (!calls.length) { finalText = outputText(response); break; }
+        if (!calls.length) {
+          const refusal = (response.output || []).flatMap((item: any) => item.content || []).find((part: any) => part.type === 'refusal')?.refusal;
+          finalText = outputText(response) || refusal || '';
+          if (!finalText && response.output?.length) finalText = pretty(response.output);
+          break;
+        }
         input = [...input, ...response.output];
         for (const call of calls) {
+          toolCallCount++;
           timeline.push({ label: 'Model tool call isteği', detail: `${call.name}(${call.arguments})`, ok: true });
           let args: any; try { args = JSON.parse(call.arguments); } catch { throw new Error('Tool argümanları JSON olarak okunamadı.'); }
           const selectedTool = toolsByName.get(call.name);
@@ -576,6 +593,7 @@ export default function App() {
           input.push({ type: 'function_call_output', call_id: call.call_id, output });
         }
       }
+      if (!finalText) finalText = toolCallCount ? 'Function çalıştırıldı ancak model bu turda son kullanıcı yanıtı üretmedi. Execution trace ve ham API yanıtını inceleyebilirsin.' : 'Model metin yanıtı veya function call döndürmedi. Ham API yanıtını inceleyebilirsin.';
     }
     setTrace([...timeline, { label: 'Model yanıtı', detail: finalText || 'Model son yanıt üretmedi.', ok: true }]);
     setResult({ text: finalText || 'Son yanıt yok.', usage: apiKey.trim() ? { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens } : { input_tokens: 156, output_tokens: 48 }, latencyMs: apiKey.trim() ? totalLatency : 650 }); setGuideStep(2);
@@ -770,7 +788,7 @@ export default function App() {
                 <p className="registry-note"><LockKeyhole size={13}/> Function handler’ları tarayıcıda JSON şablonuyla çalışır; dış sisteme işlem yapmaz. Canlı modda yalnızca model isteği OpenAI’a gider.</p>
               </div>
               <label className="request-prompt-field">Model talimatı<textarea value={toolInstruction} onChange={(e) => setToolInstruction(e.target.value)}/></label>
-              <label className={`field-label ${isHighlighted(1) ? 'highlight-label' : ''}`}>Kullanıcı isteği<input value={toolQuestion} onChange={(e) => setToolQuestion(e.target.value)}/><small>İsteğini tanımladığın function’lardan biriyle eşleştir.</small></label>
+              <div className={`tool-request-editor ${isHighlighted(1) ? 'highlight' : ''}`}><label className="tool-example-picker">Örnek kullanıcı isteği<select value="" onChange={(e) => { const example = toolQuestionExamples.find((item) => item.title === e.target.value); if (example) setToolQuestion(example.text); }}><option value="">Bir use case yükle…</option>{toolQuestionExamples.map((example) => <option key={example.title} value={example.title}>{example.title}</option>)}</select></label><label className="field-label tool-request-field">Kullanıcı isteği<textarea value={toolQuestion} onChange={(e) => setToolQuestion(e.target.value)} rows={4}/><small>Örnek yükledikten sonra metni serbestçe düzenleyebilirsin. Modelin function çağırıp çağırmaması talimat, şema ve isteğe bağlıdır.</small></label></div>
               <div className="tool-controls"><label>Tool choice<select value={toolChoice} onChange={(e) => setToolChoice(e.target.value)}><option value="auto">auto · model seçer</option><option value="required">required · tool çağırmalı</option><option value="none">none · tool kapalı</option></select></label><span><LockKeyhole size={13}/> Argümanlar şemaya göre doğrulanır</span></div>
               {demoMode && toolDefinitions.length > 0 && <label className="demo-tool-picker">Demo’da çalıştırılacak function<select value={toolDefinitions.some((tool) => tool.id === demoToolId) ? demoToolId : toolDefinitions[0].id} onChange={(e) => setDemoToolId(e.target.value)}>{toolDefinitions.map((tool) => <option key={tool.id} value={tool.id}>{tool.name || 'İsimsiz function'}</option>)}</select><small>API anahtarı yokken seçtiğin function’ın demo argümanları ve yerel handler çıktısı kullanılır.</small></label>}
               <button className="primary-button" disabled={running} onClick={runTools}><Play size={15}/>{running ? 'Tool akışı çalışıyor…' : 'Tool akışını çalıştır'}</button>
